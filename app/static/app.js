@@ -29,6 +29,13 @@ let backfillSig = ""; // 最近一次预览所基于的原始评分签名，用�
 let weightData = null; // 项目权重临界点分析最近一次只读结果
 let weightReqId = 0; // 丢弃过期的权重分析响应
 let weightSig = ""; // 最近一次权重结果所基于的（评分+裁决+范围）签名
+let thresholdData = null; // 晋级门槛检查最近一次只读结果（不写入评分或裁决）
+let thresholdReqId = 0; // 丢弃过期的门槛检查响应
+let thresholdSig = ""; // 最近一次门槛结果所基于的（评分+裁决+范围）签名
+let thresholdStale = false; // 门槛在出结果后又被修改
+let thresholdDraft = {}; // 各项目最终均分最低线（草稿，按项目名持久；"" = 不设）
+let thresholdTotalDraft = ""; // 最终总分线草稿（"" = 不设）
+let thresholdItemKey = ""; // 当前门槛编辑区对应的项目有序集合
 
 const $ = (sel) => document.querySelector(sel);
 const dashboard = $("#dashboard");
@@ -87,6 +94,12 @@ function render() {
     weightData = null;
     weightSig = "";
     renderWeightPanel();
+    thresholdReqId += 1;
+    thresholdData = null;
+    thresholdStale = false;
+    thresholdSig = "";
+    setThresholdMsg("");
+    renderThresholdPanel();
     return;
   }
   emptyState.hidden = true;
@@ -118,6 +131,14 @@ function render() {
     runWeightAnalysis();
   }
 
+  // 晋级门槛结果同样依赖评分、逐项裁决与校准范围；任一变化都自动失效重算。
+  const ts = weightSignature(analysis); // 依赖项与权重临界点完全一致，直接复用
+  if (thresholdData && ts !== thresholdSig) {
+    thresholdData = null;
+    setThresholdMsg("基础数据已变化（评分/裁决/校准范围），正在按当前门槛重新检查…");
+    runThresholdCheck();
+  }
+
   const ref = analysis.reference;
   $("#reference-info").innerHTML =
     `校准范围：<b>${esc(analysis.scope_label)}</b><br>` +
@@ -142,6 +163,7 @@ function render() {
   refreshCompare();
   renderBackfillPanel();
   renderWeightPanel();
+  renderThresholdPanel();
 }
 
 // ---------- Ranking stability experiment ----------
@@ -1362,6 +1384,222 @@ function runWeightAnalysis() {
 weightRunBtn.addEventListener("click", runWeightAnalysis);
 weightItemSel.addEventListener("change", runWeightAnalysis);
 weightUpperInput.addEventListener("change", runWeightAnalysis);
+
+// ---------- Advancement threshold check (read-only, inside the ranking card) ----------
+const thresholdEditorEl = $("#threshold-editor");
+const thresholdResultEl = $("#threshold-result");
+const thresholdRunBtn = $("#btn-threshold-run");
+const thresholdClearBtn = $("#btn-threshold-clear");
+
+function setThresholdMsg(text, cls = "") {
+  const el = $("#threshold-msg");
+  if (el) {
+    el.textContent = text;
+    el.className = "msg " + cls;
+  }
+}
+
+// 门槛编辑区只在项目集合变化时整体重建；重建保留同名项目已填写的门槛。
+function renderThresholdEditor() {
+  const hasData = !!(analysis && analysis.counts.scores > 0);
+  thresholdRunBtn.disabled = !hasData;
+  if (!hasData) {
+    thresholdEditorEl.innerHTML = "";
+    thresholdItemKey = "";
+    return;
+  }
+  const key = analysis.items.join("|");
+  if (key === thresholdItemKey) return;
+  thresholdItemKey = key;
+  const itemInputs = analysis.items.map((it) => {
+    const val = thresholdDraft[it] !== undefined ? thresholdDraft[it] : "";
+    return `
+      <label class="th-item">「${esc(it)}」最终均分 ≥
+        <input type="number" class="th-input" data-item="${esc(it)}" step="any"
+               placeholder="不设" value="${esc(val)}">
+      </label>`;
+  }).join("");
+  thresholdEditorEl.innerHTML = itemInputs + `
+    <label class="th-item th-total">最终总分线 ≥（可选）
+      <input type="number" id="threshold-total" class="th-input" step="any"
+             placeholder="不设" value="${esc(thresholdTotalDraft)}">
+    </label>`;
+  thresholdEditorEl.querySelectorAll(".th-input[data-item]").forEach((input) => {
+    input.addEventListener("input", (ev) => {
+      thresholdDraft[ev.target.dataset.item] = ev.target.value;
+      markThresholdStale();
+    });
+  });
+  $("#threshold-total").addEventListener("input", (ev) => {
+    thresholdTotalDraft = ev.target.value;
+    markThresholdStale();
+  });
+}
+
+// 结果生成后再改门槛 → 标记结果过期（不自动重算，点「检查达标情况」刷新）。
+function markThresholdStale() {
+  if (thresholdData && !thresholdStale) {
+    thresholdStale = true;
+    renderThresholdResult();
+  }
+}
+
+// 收集并前端校验门槛；返回 {item_thresholds, total_threshold} 或 {error}。
+function collectThresholds() {
+  const itemThresholds = {};
+  for (const it of analysis.items) {
+    const raw = thresholdDraft[it];
+    if (raw === undefined || raw === "") continue;
+    const v = Number(raw);
+    if (!Number.isFinite(v)) return { error: `项目「${it}」的门槛必须是数字。` };
+    itemThresholds[it] = v;
+  }
+  let totalThreshold = null;
+  if (thresholdTotalDraft !== "") {
+    const v = Number(thresholdTotalDraft);
+    if (!Number.isFinite(v)) return { error: "最终总分线必须是数字。" };
+    totalThreshold = v;
+  }
+  if (Object.keys(itemThresholds).length === 0) {
+    return { error: "请至少为一个项目填写最终均分最低线（或点击「清空门槛」）。" };
+  }
+  return { item_thresholds: itemThresholds, total_threshold: totalThreshold };
+}
+
+function renderThresholdPanel() {
+  renderThresholdEditor();
+  renderThresholdResult();
+}
+
+function renderThresholdResult() {
+  if (!thresholdData) {
+    thresholdResultEl.innerHTML = "";
+    return;
+  }
+  const p = thresholdData;
+  const s = p.summary;
+  const thDesc = p.item_thresholds
+    .map((t) => `「${esc(t.item)}」最终均分 ≥ <b>${fmt(t.threshold)}</b>`)
+    .join("，");
+  const totalDesc =
+    p.total_threshold === null ? "未设最终总分线" : `最终总分线 ≥ <b>${fmt(p.total_threshold)}</b>`;
+  const banner = `
+    <div class="th-banner">
+      晋级门槛（校准范围：<b>${esc(p.scope_label)}</b>，只读、实时计算，不写入数据）｜${thDesc}；${totalDesc}。<br>
+      <span class="th-pass">达标 <b>${s.pass}</b></span> ｜
+      <span class="th-fail">未达标 <b>${s.fail}</b></span> ｜
+      <span class="th-ins">数据不足 <b>${s.insufficient}</b></span>（共 ${s.contestants} 人）。
+      缺少任一门槛项目的选手<b>不按 0 分</b>处理，标为「数据不足」并列出缺失项目。
+      ${thresholdStale ? '<span class="th-stale">⚠ 门槛在上次检查后已修改，以下结果已过期，请重新检查。</span>' : ""}
+    </div>`;
+
+  const itemHeads = p.item_thresholds
+    .map(
+      (t) =>
+        `<th class="num">${esc(t.item)}<br>最终均分<br><small>门槛 ${fmt(t.threshold)}</small></th>`,
+    )
+    .join("");
+  const totalHead =
+    `<th class="num">最终总分` +
+    (p.total_threshold === null ? "" : `<br><small>总分线 ${fmt(p.total_threshold)}</small>`) +
+    `</th>`;
+  const head = `<tr><th class="num">最终<br>名次</th><th>选手</th>${itemHeads}${totalHead}<th>结果</th><th>未达标原因</th></tr>`;
+
+  const statusBadge = (st) => {
+    if (st === "pass") return `<span class="th-badge th-badge-pass">${esc(p.status_labels.pass)}</span>`;
+    if (st === "fail") return `<span class="th-badge th-badge-fail">${esc(p.status_labels.fail)}</span>`;
+    return `<span class="th-badge th-badge-ins">${esc(p.status_labels.insufficient)}</span>`;
+  };
+
+  const rows = p.contestants.map((c) => {
+    const itemCells = c.items.map((ir) => {
+      if (ir.eff_avg === null) return `<td class="num nodata">无数据</td>`;
+      const cls = ir.met ? "th-met" : "th-unmet";
+      return `<td class="num ${cls}">${fmt(ir.eff_avg)} <small>${ir.met ? "✓" : "✗"}</small></td>`;
+    }).join("");
+    let totalCell;
+    if (p.total_threshold === null) {
+      totalCell = `<td class="num"><b>${fmt(c.eff_total)}</b></td>`;
+    } else {
+      const cls = c.total_met ? "th-met" : "th-unmet";
+      totalCell = `<td class="num ${cls}"><b>${fmt(c.eff_total)}</b> <small>${c.total_met ? "✓" : "✗"}</small></td>`;
+    }
+    const reasonCell = c.reasons.length
+      ? c.reasons.map(esc).join("<br>")
+      : '<span class="delta-flat">—</span>';
+    const rowCls =
+      c.status === "insufficient" ? "th-row-ins" : c.status === "fail" ? "th-row-fail" : "";
+    return `
+    <tr class="${rowCls}">
+      <td class="num"><b>${c.eff_rank}</b></td>
+      <td>${esc(c.contestant)}</td>
+      ${itemCells}${totalCell}
+      <td>${statusBadge(c.status)}</td>
+      <td class="th-reason">${reasonCell}</td>
+    </tr>`;
+  }).join("");
+
+  thresholdResultEl.innerHTML =
+    banner + `<div class="table-wrap th-table-wrap"><table>${head}${rows}</table></div>`;
+}
+
+function runThresholdCheck() {
+  if (!analysis || analysis.counts.scores === 0) return;
+  const collected = collectThresholds();
+  if (collected.error) {
+    thresholdReqId += 1;
+    thresholdData = null;
+    thresholdStale = false;
+    renderThresholdResult();
+    setThresholdMsg(collected.error, "error");
+    return;
+  }
+  const myId = ++thresholdReqId;
+  const sig = weightSignature(analysis); // 请求时签名：等待期间数据再变则丢弃重算
+  setThresholdMsg("检查中…");
+  api(`/api/sessions/${SESSION_ID}/threshold-check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collected),
+  })
+    .then((data) => {
+      if (myId !== thresholdReqId) return;
+      if (sig !== weightSignature(analysis)) {
+        runThresholdCheck(); // 评分/裁决/范围在请求期间已变化：按最新数据重算
+        return;
+      }
+      thresholdData = data;
+      thresholdStale = false;
+      thresholdSig = sig;
+      renderThresholdResult();
+      const s = data.summary;
+      setThresholdMsg(
+        `检查完成：达标 ${s.pass}、未达标 ${s.fail}、数据不足 ${s.insufficient}（只读，未写入任何数据）。`,
+        "ok",
+      );
+    })
+    .catch((err) => {
+      if (myId !== thresholdReqId) return;
+      thresholdData = null;
+      renderThresholdResult();
+      setThresholdMsg(err.message, "error");
+      toast("晋级门槛检查失败：" + err.message, true);
+    });
+}
+
+thresholdRunBtn.addEventListener("click", runThresholdCheck);
+
+thresholdClearBtn.addEventListener("click", () => {
+  thresholdReqId += 1; // 放弃进行中的响应
+  thresholdDraft = {};
+  thresholdTotalDraft = "";
+  thresholdItemKey = ""; // 强制编辑区以空值重建
+  thresholdData = null;
+  thresholdStale = false;
+  thresholdSig = "";
+  renderThresholdPanel();
+  setThresholdMsg("已清空全部门槛（不影响任何评分或裁决）。", "ok");
+});
 
 // ---------- Decision updates ----------
 let inflight = false;

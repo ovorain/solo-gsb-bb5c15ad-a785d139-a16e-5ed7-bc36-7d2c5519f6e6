@@ -73,6 +73,21 @@
         <button id="btn-export" class="btn btn-primary">导出审计 CSV</button>
       </div>
       <div id="rank-table-wrap" class="table-wrap"></div>
+
+      <h3 class="sub">晋级门槛检查（只读）</h3>
+      <p class="hint">
+        为<b>一个或多个项目</b>填写「最终项目均分最低线」（留空表示该项目不设门槛），并可选择填写「最终总分线」。
+        系统基于当前<b>校准范围</b>与<b>逐项裁决</b>实时判定每名选手<b>达标 / 未达标 / 数据不足</b>：
+        缺少任一被设门槛项目评分的选手标为<b>「数据不足」</b>并列出缺失项目，<b>不按 0 分</b>处理。
+        结果只读、不写入任何数据；评分、裁决或校准范围变化后旧结果自动失效并按当前门槛重新检查。
+      </p>
+      <div id="threshold-editor" class="th-editor"></div>
+      <div class="toolbar" style="margin-top:10px;">
+        <button id="btn-threshold-run" class="btn btn-primary">检查达标情况</button>
+        <button id="btn-threshold-clear" class="btn btn-ghost-card">清空门槛</button>
+        <span id="threshold-msg" class="msg"></span>
+      </div>
+      <div id="threshold-result" class="threshold-result"></div>
     </section>
 
     <!-- 4. 双选手对比 -->

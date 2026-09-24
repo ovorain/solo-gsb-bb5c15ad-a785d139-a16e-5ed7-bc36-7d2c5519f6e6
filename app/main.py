@@ -35,6 +35,7 @@ from .scoring import (
     compare_contestants,
     stability_experiment,
 )
+from .thresholds import ThresholdValidationError, threshold_check
 from .weight_analysis import WeightValidationError, weight_threshold_analysis
 
 SAMPLE_PATH = os.environ.get(
@@ -95,6 +96,13 @@ class WeightBody(BaseModel):
     item: str = Field(min_length=1, max_length=200)
     # 倍率上限（1～5），倍率始终从 0 连续变化到该上限，其余项目恒为 1。
     upper_bound: float = Field(ge=1.0, le=5.0)
+
+
+class ThresholdCheckBody(BaseModel):
+    # 项目 -> 最终项目均分最低线；至少设置一个项目，项目名必须存在于当前会话。
+    item_thresholds: dict[str, float] = Field(min_length=1)
+    # 可选的最终总分线；null 表示不设总分线。
+    total_threshold: float | None = None
 
 
 class RuleBody(BaseModel):
@@ -485,6 +493,29 @@ def weight_thresholds(session_id: str, body: WeightBody) -> dict[str, Any]:
     try:
         return weight_threshold_analysis(analysis, body.item, body.upper_bound)
     except WeightValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/sessions/{session_id}/threshold-check")
+def advancement_threshold_check(session_id: str, body: ThresholdCheckBody) -> dict[str, Any]:
+    """晋级门槛检查（只读）。
+
+    以当前校准范围与逐项裁决形成的**最终项目均分 / 最终总分**为基础，判定每名
+    选手是否达到用户设定的门槛：一个或多个项目的最终均分最低线（必填，至少一
+    个项目）加可选的最终总分线。缺少任一被设门槛项目评分的选手标为「数据不
+    足」并列出缺失项目，**不按 0 分**处理。结果每次请求实时重算，不写入评分、
+    裁决或会话。
+    """
+    with db.get_conn() as conn:
+        if db.get_scope(conn, session_id) is None:
+            raise HTTPException(status_code=404, detail="会话不存在，请先上传数据。")
+        scope = _resolve_scope(conn, session_id, None)
+        analysis = _build_analysis(conn, session_id, scope)
+    if analysis["counts"]["scores"] == 0:
+        raise HTTPException(status_code=404, detail="当前会话没有评分数据，无法检查晋级门槛。")
+    try:
+        return threshold_check(analysis, body.item_thresholds, body.total_threshold)
+    except ThresholdValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
