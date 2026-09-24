@@ -555,3 +555,57 @@ tr.wt-tie-row td { background: #f3efff; }
   padding: 0 6px;
 }
 .wt-missing { color: var(--muted); font-size: 12px; }
+
+/* ---------- ③a 晋级门槛检查 ---------- */
+.promo-wrap {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+}
+.promo-controls { margin-top: 4px; }
+.promo-total-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.promo-total-label input { width: 120px; }
+.promo-table-wrap { max-width: 520px; margin-bottom: 10px; }
+.promo-table-wrap input {
+  width: 130px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 13px;
+}
+.promo-table-wrap input:focus { outline: 2px solid #c9d9ff; border-color: var(--primary); }
+.promo-result { margin-top: 12px; }
+.promo-banner {
+  background: #f3f8f5;
+  border: 1px solid #d8eadf;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #2f4a3a;
+  margin-bottom: 12px;
+}
+.promo-banner .promo-note { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+.promo-pass { color: var(--green); font-weight: 600; }
+.promo-fail { color: var(--red); font-weight: 600; }
+.promo-ins { color: var(--amber); font-weight: 600; }
+.promo-badge {
+  display: inline-block;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 1px 10px;
+  white-space: nowrap;
+}
+.promo-badge.promo-pass { background: #e4f6ec; }
+.promo-badge.promo-fail { background: #fdeaea; }
+.promo-badge.promo-insufficient_data { background: #fdf3dd; }
+tr.promo-row-pass td { background: #f7fcf9; }
+tr.promo-row-fail td { background: #fdf7f7; }
+tr.promo-row-insufficient_data td { background: #fdfaf3; }
+.promo-cell-pass { color: var(--green); }
+.promo-cell-fail { color: var(--red); font-weight: 600; }
+.promo-cell-pass small, .promo-cell-fail small { color: var(--muted); font-weight: 400; }
+.promo-no-data { color: var(--amber); font-size: 12px; }
+.promo-reasons { white-space: normal; min-width: 220px; font-size: 12px; }
+.promo-result-wrap th { white-space: normal; font-size: 12px; line-height: 1.3; }
+.promo-foot { margin-top: 8px; }

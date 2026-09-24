@@ -21,6 +21,7 @@ from .merge import (
     current_basis,
     normalize_incoming_records,
 )
+from .promotion import PromotionValidationError, promotion_check
 from .rules import (
     RuleValidationError,
     evaluate_rules,
@@ -95,6 +96,19 @@ class WeightBody(BaseModel):
     item: str = Field(min_length=1, max_length=200)
     # 倍率上限（1～5），倍率始终从 0 连续变化到该上限，其余项目恒为 1。
     upper_bound: float = Field(ge=1.0, le=5.0)
+
+
+class ItemThresholdBody(BaseModel):
+    # 单个项目的最终项目均分最低线（项目名在 pure 层校验是否存在）。
+    item: str = Field(min_length=1, max_length=200)
+    min_avg: float
+
+
+class PromotionBody(BaseModel):
+    # 一个或多个项目的最终项目均分最低线（至少一条，项目名不允许重复）。
+    item_thresholds: list[ItemThresholdBody] = Field(min_length=1)
+    # 可选的最终总分最低线；不填则只检查项目门槛。
+    total_threshold: float | None = None
 
 
 class RuleBody(BaseModel):
@@ -485,6 +499,32 @@ def weight_thresholds(session_id: str, body: WeightBody) -> dict[str, Any]:
     try:
         return weight_threshold_analysis(analysis, body.item, body.upper_bound)
     except WeightValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/sessions/{session_id}/promotion-check")
+def promotion_threshold_check(session_id: str, body: PromotionBody) -> dict[str, Any]:
+    """晋级门槛检查（只读）。
+
+    用户为一个或多个项目填写最终项目均分最低线，并可选择填写最终总分线；
+    基于当前校准范围与逐项裁决实时计算每位选手是否达标。缺少任一被设门槛
+    项目的选手标为「数据不足」并列出缺失项目，**不按 0 分处理**。
+    结果每次请求实时重算，不写入评分、裁决或会话。
+    """
+    with db.get_conn() as conn:
+        if db.get_scope(conn, session_id) is None:
+            raise HTTPException(status_code=404, detail="会话不存在，请先上传数据。")
+        scope = _resolve_scope(conn, session_id, None)
+        analysis = _build_analysis(conn, session_id, scope)
+    if analysis["counts"]["scores"] == 0:
+        raise HTTPException(status_code=404, detail="当前会话没有评分数据，无法检查晋级门槛。")
+    try:
+        return promotion_check(
+            analysis,
+            [t.model_dump() for t in body.item_thresholds],
+            body.total_threshold,
+        )
+    except PromotionValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 

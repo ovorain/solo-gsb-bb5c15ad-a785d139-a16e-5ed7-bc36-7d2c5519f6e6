@@ -29,6 +29,12 @@ let backfillSig = ""; // 最近一次预览所基于的原始评分签名，用�
 let weightData = null; // 项目权重临界点分析最近一次只读结果
 let weightReqId = 0; // 丢弃过期的权重分析响应
 let weightSig = ""; // 最近一次权重结果所基于的（评分+裁决+范围）签名
+let promoData = null; // 晋级门槛检查最近一次只读结果（不落库）
+let promoReqId = 0; // 丢弃过期的门槛检查响应
+let promoSig = ""; // 最近一次门槛结果所基于的（评分+裁决+范围）签名
+let promoItemLines = {}; // 各项目最低线草稿（按项目名持久，留空表示不设门槛）
+let promoItemKey = ""; // 当前输入表对应的项目有序集合
+let promoTotalDraft = ""; // 总分线草稿（字符串，空串表示不检查总分）
 
 const $ = (sel) => document.querySelector(sel);
 const dashboard = $("#dashboard");
@@ -87,6 +93,13 @@ function render() {
     weightData = null;
     weightSig = "";
     renderWeightPanel();
+    promoReqId += 1;
+    promoData = null;
+    promoSig = "";
+    promoItemLines = {};
+    promoItemKey = "";
+    promoTotalDraft = "";
+    renderPromotionPanel();
     return;
   }
   emptyState.hidden = true;
@@ -117,6 +130,22 @@ function render() {
     // 首次有数据时，用当前选择自动计算一次（项目/上限改变由控件事件触发）。
     runWeightAnalysis();
   }
+
+  // 晋级门槛结果依赖评分、逐项裁决与校准范围；任一变化都自动失效并重算。
+  const ps = weightSignature(analysis); // 与权重分析同一组依赖：范围 + 最终分
+  let promoAutoRun = false;
+  if (promoData && ps !== promoSig) {
+    promoData = null;
+    // 旧门槛项目若仍存在则以当前填写值自动重算；门槛整体清空时不发请求。
+    if (collectPromotionRequest({ silent: true })) {
+      promoAutoRun = true;
+      setPromoMsg("基础数据已变化（评分/裁决/校准范围），正在重新检查…");
+    } else {
+      setPromoMsg("基础数据已变化，请重新填写门槛。", "error");
+    }
+  }
+  renderPromotionPanel();
+  if (promoAutoRun) runPromotionCheck({ auto: true });
 
   const ref = analysis.reference;
   $("#reference-info").innerHTML =
@@ -1362,6 +1391,233 @@ function runWeightAnalysis() {
 weightRunBtn.addEventListener("click", runWeightAnalysis);
 weightItemSel.addEventListener("change", runWeightAnalysis);
 weightUpperInput.addEventListener("change", runWeightAnalysis);
+
+// ---------- Promotion threshold check (read-only) ----------
+const promoTotalInput = $("#promo-total");
+const promoInputsEl = $("#promo-inputs");
+const promoResultEl = $("#promo-result");
+const promoRunBtn = $("#btn-promo-run");
+const promoClearBtn = $("#btn-promo-clear");
+
+function setPromoMsg(text, cls = "") {
+  const el = $("#promo-msg");
+  if (el) {
+    el.textContent = text;
+    el.className = "msg " + cls;
+  }
+}
+
+// 门槛输入表只在项目集合变化时整体重建；重建保留同名项目已填的最低线。
+function renderPromotionInputs() {
+  if (!analysis || analysis.counts.scores === 0) {
+    promoInputsEl.innerHTML = "";
+    promoRunBtn.disabled = true;
+    promoTotalInput.disabled = true;
+    return;
+  }
+  promoRunBtn.disabled = false;
+  promoTotalInput.disabled = false;
+  const key = analysis.items.join("|");
+  if (key === promoItemKey) return;
+  promoItemKey = key;
+  const rows = analysis.items.map((it) => {
+    const val = promoItemLines[it] !== undefined ? promoItemLines[it] : "";
+    return `
+      <tr>
+        <td>${esc(it)}</td>
+        <td class="num"><input type="number" class="promo-line-input" data-item="${esc(it)}"
+          step="any" placeholder="不设门槛" value="${esc(String(val))}"></td>
+      </tr>`;
+  }).join("");
+  promoInputsEl.innerHTML = `
+    <p class="hint" style="margin:8px 0 6px;">各项目最终均分最低线（留空表示该项目不设门槛；至少填写一个项目）：</p>
+    <div class="table-wrap promo-table-wrap"><table>
+      <tr><th>项目</th><th class="num">最终均分最低线</th></tr>
+      ${rows}
+    </table></div>`;
+  promoInputsEl.querySelectorAll(".promo-line-input").forEach((input) => {
+    input.addEventListener("input", (ev) => {
+      promoItemLines[ev.target.dataset.item] = ev.target.value;
+      syncPromoClearBtn();
+    });
+  });
+}
+
+// 从草稿收集请求体；校验失败时按 silent 决定是否提示。返回 null 表示不发请求。
+function collectPromotionRequest({ silent = false } = {}) {
+  const fail = (msg) => {
+    if (!silent) {
+      setPromoMsg(msg, "error");
+      toast(msg, true);
+    }
+    return null;
+  };
+  const item_thresholds = [];
+  for (const it of analysis.items) {
+    const raw = String(promoItemLines[it] !== undefined ? promoItemLines[it] : "").trim();
+    if (raw === "") continue;
+    const v = Number(raw);
+    if (!Number.isFinite(v)) return fail(`项目「${it}」的最低线必须是数字。`);
+    item_thresholds.push({ item: it, min_avg: v });
+  }
+  if (!item_thresholds.length) return fail("请至少为一个项目填写最终项目均分最低线。");
+  let total_threshold = null;
+  const totalRaw = String(promoTotalDraft).trim();
+  if (totalRaw !== "") {
+    const v = Number(totalRaw);
+    if (!Number.isFinite(v)) return fail("最终总分线必须是数字（或留空不检查总分）。");
+    total_threshold = v;
+  }
+  return { item_thresholds, total_threshold };
+}
+
+function syncPromoClearBtn() {
+  const hasDraft =
+    String(promoTotalDraft).trim() !== "" ||
+    Object.values(promoItemLines).some((v) => String(v).trim() !== "");
+  promoClearBtn.disabled = !promoData && !hasDraft;
+}
+
+function renderPromotionPanel() {
+  renderPromotionInputs();
+  if (promoTotalInput.value !== promoTotalDraft) promoTotalInput.value = promoTotalDraft;
+  syncPromoClearBtn();
+  renderPromotionResult();
+}
+
+function renderPromotionResult() {
+  if (!promoData) {
+    promoResultEl.innerHTML = "";
+    return;
+  }
+  const p = promoData;
+  const s = p.summary;
+  const t = p.thresholds;
+  const lineItems = t.items.map((x) => `${esc(x.item)}≥${fmt(x.min_avg)}`).join("，");
+  const totalText = t.total === null ? "未设置总分线" : `最终总分线 <b>${fmt(t.total)}</b>`;
+  const banner = `
+    <div class="promo-banner">
+      晋级门槛检查（校准范围：<b>${esc(p.scope_label)}</b>，只读、实时计算，不写入数据）｜
+      门槛：${lineItems}；${totalText}。<br>
+      <b class="promo-pass">达标 ${s.pass}</b> 名 ｜
+      <b class="promo-fail">未达标 ${s.fail}</b> 名 ｜
+      <b class="promo-ins">数据不足 ${s.insufficient_data}</b> 名
+      （共 ${s.contestants} 名）。
+      <span class="promo-note">缺失门槛项目不按 0 分处理，也不参与总分线判定。</span>
+    </div>`;
+
+  const statusBadge = (row) =>
+    `<span class="promo-badge promo-${row.status}">${esc(row.status_label)}</span>`;
+
+  const avgCell = (cell) => {
+    if (!cell.has_data) return `<td class="num promo-no-data">无数据</td>`;
+    let cls = "";
+    if (cell.threshold !== null && cell.threshold !== undefined) {
+      cls = cell.passes ? " promo-cell-pass" : " promo-cell-fail";
+    }
+    return `<td class="num${cls}">${fmt(cell.avg)}${cell.threshold !== null && cell.threshold !== undefined ? `<small> / ${fmt(cell.threshold)}</small>` : ""}</td>`;
+  };
+
+  const totalCell = (row) => {
+    if (row.status === "insufficient_data") {
+      return `<td class="num"><b>${fmt(row.total)}</b></td>
+        <td class="num promo-no-data">—（不判定）</td><td><span class="promo-ins">数据不足</span></td>`;
+    }
+    if (row.total_check === null) {
+      return `<td class="num"><b>${fmt(row.total)}</b></td><td class="num">—</td><td><span class="delta-flat">未设总分线</span></td>`;
+    }
+    const cls = row.total_check.passes ? "promo-pass" : "promo-fail";
+    return `<td class="num"><b>${fmt(row.total)}</b></td>
+      <td class="num">${fmt(row.total_check.threshold)}</td>
+      <td><span class="${cls}">${row.total_check.passes ? "达标" : `差 ${fmt(row.total_check.gap)}`}</span></td>`;
+  };
+
+  const rows = p.contestants.map((row) => `
+    <tr class="promo-row-${row.status}">
+      <td class="num"><b>${row.rank}</b></td>
+      <td>${esc(row.contestant)}</td>
+      ${p.contestants[0].items.map((cell) => avgCell(row.items.find((x) => x.item === cell.item))).join("")}
+      ${totalCell(row)}
+      <td>${statusBadge(row)}</td>
+      <td class="promo-reasons">${row.reasons.length
+        ? row.reasons.map((r) => `<div>${esc(r.message)}</div>`).join("")
+        : '<span class="delta-flat">—</span>'}</td>
+    </tr>`).join("");
+
+  // 表头：每个项目一列（门槛线在副标题中已列出），其后总分 / 总分线 / 总分判定 / 状态 / 未达标原因。
+  const itemHead = p.contestants[0].items
+    .map((cell) => {
+      const line = cell.threshold !== null && cell.threshold !== undefined;
+      return `<th class="num">${esc(cell.item)}${line ? '<br><small>均分/门槛</small>' : '<br><small>最终均分</small>'}</th>`;
+    })
+    .join("");
+
+  promoResultEl.innerHTML = banner + `
+    <div class="table-wrap promo-result-wrap"><table>
+      <tr><th class="num">最终名次</th><th>选手</th>${itemHead}
+        <th class="num">最终总分</th><th class="num">总分线</th><th>总分判定</th>
+        <th>结论</th><th>未达标 / 数据不足原因</th>
+      </tr>
+      ${rows}
+    </table></div>
+    <p class="hint promo-foot">
+      列中 <code>均分 / 门槛</code> 分别为该选手该项目的最终均分与所设最低线；绿色为达标、红色为低于门槛、
+      「无数据」不按 0 分计。所有数字由当前评分、裁决与校准范围实时计算，清空会话或清空门槛后本结果消失。
+    </p>`;
+}
+
+function runPromotionCheck({ auto = false } = {}) {
+  if (!analysis || analysis.counts.scores === 0) return;
+  const payload = collectPromotionRequest({ silent: auto });
+  if (!payload) {
+    if (!auto) promoData = null;
+    renderPromotionPanel();
+    return;
+  }
+  const myId = ++promoReqId;
+  if (!auto) setPromoMsg("检查中…");
+  api(`/api/sessions/${SESSION_ID}/promotion-check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+    .then((data) => {
+      if (myId !== promoReqId) return;
+      promoData = data;
+      promoSig = weightSignature(analysis);
+      promoTotalDraft = promoTotalInput.value;
+      renderPromotionPanel();
+      const s = data.summary;
+      setPromoMsg(
+        `检查完成：达标 ${s.pass}、未达标 ${s.fail}、数据不足 ${s.insufficient_data}（只读，未写入数据）。`,
+        "ok",
+      );
+    })
+    .catch((err) => {
+      if (myId !== promoReqId) return;
+      promoData = null;
+      renderPromotionPanel();
+      setPromoMsg(err.message, "error");
+      if (!auto) toast("晋级门槛检查失败：" + err.message, true);
+    });
+}
+
+promoRunBtn.addEventListener("click", () => runPromotionCheck());
+promoTotalInput.addEventListener("input", () => {
+  promoTotalDraft = promoTotalInput.value;
+  syncPromoClearBtn();
+});
+
+promoClearBtn.addEventListener("click", () => {
+  promoReqId += 1;
+  promoData = null;
+  promoSig = "";
+  promoItemLines = {};
+  promoItemKey = "";
+  promoTotalDraft = "";
+  renderPromotionPanel();
+  setPromoMsg("已清空全部门槛与结果，数据未做任何改动。", "ok");
+});
 
 // ---------- Decision updates ----------
 let inflight = false;

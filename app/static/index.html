@@ -73,6 +73,27 @@
         <button id="btn-export" class="btn btn-primary">导出审计 CSV</button>
       </div>
       <div id="rank-table-wrap" class="table-wrap"></div>
+
+      <div class="promo-wrap">
+        <h3 class="sub">晋级门槛检查（只读，实时重算）</h3>
+        <p class="hint">
+          为一个或多个项目填写<b>最终项目均分最低线</b>，并可选填写<b>最终总分线</b>，
+          系统基于当前<b>校准范围</b>与<b>逐项裁决</b>实时判定每位选手是否达标：
+          所有门槛项目均分达标（且总分达标）为<b class="promo-pass">达标</b>；任一均分或总分不达标为<b class="promo-fail">未达标</b>并列出差距；
+          <b class="promo-ins">缺少任一被设门槛项目</b>的选手标为<b class="promo-ins">数据不足</b>并列出缺失项目，<b>不按 0 分处理</b>。
+          门槛仅保存在本页面，结果<b>只读不落库</b>；评分、裁决或校准范围变化后自动失效并重算，也可一键清空。
+        </p>
+        <div class="toolbar promo-controls">
+          <button id="btn-promo-run" class="btn btn-primary">检查晋级门槛</button>
+          <label class="promo-total-label">最终总分线（可选）
+            <input type="number" id="promo-total" class="select" step="any" placeholder="不检查总分">
+          </label>
+          <button id="btn-promo-clear" class="btn btn-ghost-card">清空门槛</button>
+          <span id="promo-msg" class="msg"></span>
+        </div>
+        <div id="promo-inputs" class="promo-inputs"></div>
+        <div id="promo-result" class="promo-result"></div>
+      </div>
     </section>
 
     <!-- 4. 双选手对比 -->
